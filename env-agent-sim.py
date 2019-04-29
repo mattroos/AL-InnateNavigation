@@ -8,6 +8,9 @@
 
 ### NEVERMIND. Try turn-based simulation first, rather than threaded.
 
+# TODO: Do not create offspring if agents parents have mated
+# before or are parent/child.
+
 import numpy as np
 import time
 import sys
@@ -30,7 +33,7 @@ class Board():
         board[:,0] = obstacle_gray # left wall
         board[:,board_size[0]-1] = obstacle_gray # right wall
         self.board = np.repeat(np.expand_dims(board, axis=2), 3, axis=2)
-        self.board_agents = np.zeros(board_size, dtype=np.uint)
+        self.board_agents = np.zeros(board_size, dtype=np.uint32)
         self.image = self.board     # for rendering
         self.unoccupied = np.sum(self.image, axis=2) == 0  # board plus agents
         self.agent_locations = {}
@@ -46,9 +49,9 @@ class Board():
 
     def _get_free_location(self):
         ix = np.where(self.unoccupied)
-        # assert len(ix[0]) > 0, 'Error: No free location on board.'
         if len(ix[0])==0:
-            pdb.set_trace()
+            print('\nEnding simulation: No free locations remain on board.')
+            sys.exit()
         i = np.random.randint(len(ix[0]))
         loc = np.array([ix[0][i], ix[1][i]])
         return loc
@@ -103,12 +106,6 @@ class Agent:
                 moving = True
         return direction
 
-    def parents(self):
-        return self.parents
-
-    def mates(self):
-        return self.mates
-
     def state_update(self, agent_view, bumped_object=False):
         self.view = agent_view
         self.bumped_object = bumped_object
@@ -120,16 +117,19 @@ t_frame = 0.01
 n_steps = 100
 
 agents = [Agent(i) for i in range(1, n_agents+1)]
-board_size = [16,16]   # height, width
+board_size = [64,64]   # height, width
 board = Board(board_size=board_size, f_obstacles=0.1)
 for a in agents:
     board.add_agent(a)
 
-plt.figure(1)
-plt.imshow(board.image)
-plt.pause(t_frame)
+if b_render:
+    plt.figure(1)
+    plt.imshow(board.image)
+    plt.pause(t_frame)
+
 i_step = 0
 t_start = time.time()
+cnt_mate_collisions = 0
 # while i_step < 100:
 while True:
     t_step = time.time()
@@ -141,12 +141,33 @@ while True:
             bumped_object = True
             mate_id = board.agent_at_location(loc_new)
             if mate_id is not None:
-                # TODO: May want to create babies after all agents have had a step,
-                # so this enumerate loop doesn't grow while the looping is occurring.
+                b_create_offspring = True
 
-                n_agents += 1
-                agents.append(Agent(n_agents, parents=(a.id, mate_id)))
-                board.add_agent(agents[-1])
+                ## Don't create offspring if pair is parent/child
+                # (Why not!? This is just a human taboo!)
+                if a.parents is not None and mate_id in a.parents:
+                    b_create_offspring = False
+                if agents[mate_id-1].parents is not None and a.id in agents[mate_id-1].parents:
+                    b_create_offspring = False
+
+                ## Don't mate if this pair has mated before.
+                # This is to prevent agents from just idling in a local area and mating
+                # regularly with the same partners. Goal is to promote navigation by agents.
+                if mate_id in a.mates:
+                    b_create_offspring = False
+
+                if b_create_offspring:
+                    # TODO?: May want to create babies after all agents have had a step,
+                    # so this enumerate loop doesn't grow while the looping is occurring.
+
+                    # Create offspring
+                    n_agents += 1
+                    agents.append(Agent(n_agents, parents=(a.id, mate_id)))
+                    board.add_agent(agents[-1])
+                    # Add IDs to mate lists, for both parents
+                    a.mates.append(mate_id)
+                    agents[mate_id].mates.append(a.id)
+
         else:
             bumped_object = False
             board.move_agent(a.id, loc_new)
@@ -164,4 +185,5 @@ while True:
 t_total = time.time() - t_start
 print('Total time = %f seconds, time/step=%f' % (t_total, t_total/n_steps))
 
-plt.imshow(board.image)
+if b_render:
+    plt.imshow(board.image)
