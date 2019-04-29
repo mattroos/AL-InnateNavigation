@@ -29,7 +29,7 @@ class Board():
     def __init__(self, board_size=[64,64], f_obstacles=0.1, view_distance=5):
         assert view_distance%2==1, 'Agent view distance must be odd-valued.'
         board = np.zeros(board_size, dtype=np.uint8)
-        board_type = 'grouped'   # random, grouped
+        board_type = 'random'   # random, grouped
         obstacle_gray = 128
     
         if board_type=='random':
@@ -187,7 +187,7 @@ for i in range(1, n_agents+1):
     agents[i] = Agent(i)
 
 board_size = [64,64]   # height, width
-# board_size = [16,16]   # height, width
+# board_size = [32,32]   # height, width
 board = Board(board_size=board_size, f_obstacles=0.1)
 for key, a in agents.items():
     board.add_agent(a)
@@ -210,17 +210,19 @@ while True:
         direction, timeout = a.step()
         # print('Agent %d: dir=%d,%d  timeout=%d\n' % (a.id, direction[0], direction[1], timeout))
 
+        speed_avg_factor = 0.95
+
         if timeout <=0:
             loc_new = board.get_agent_location(a.id) + direction
 
             if not board.unoccupied[loc_new[0], loc_new[1]]:
                 # Bumped into wall or other agent
+                board.agent_speeds[a.id] = speed_avg_factor*board.agent_speeds[a.id] + 0.0
                 mate_id = board.agent_at_location(loc_new)
 
                 if mate_id is None:
                     # Bumped into wall
                     bumped_object = 'wall'
-                    board.agent_speeds[a.id] = 0.80*board.agent_speeds[a.id] + 0.0
                 else:
                     # Bumped into other agent. Might be able to mate.
                     bumped_object = 'agent'
@@ -251,26 +253,30 @@ while True:
 
             else:
                 board.move_agent(a, loc_new)
-                board.agent_speeds[a.id] = 0.80*board.agent_speeds[a.id] + 0.2
+                board.agent_speeds[a.id] = speed_avg_factor*board.agent_speeds[a.id] + (1-speed_avg_factor)
+        else:
+            # Still in timeout
+            board.agent_speeds[a.id] = speed_avg_factor*board.agent_speeds[a.id] + 0.0
 
         a.bumped_object = bumped_object
 
-    # # Kill some agents.
-    # For now, just randomly select them. Those that navigate and mate
-    # more rapidly will create more offspring on average, despite equal
-    # chance of death amongst all agents.
-    percent_max = 10
+
+    # Determine how many agents to kill
+    percent_max = 20
     n_non_agent = np.sum(np.sum(board.board, axis=2)==0)
     n_max = int(round(percent_max/100*n_non_agent))
     n_alive_agents = len(board.agent_locations)
     n_kill = max(0, n_alive_agents-n_max)
+
+    ## Randomly select agents to kill
     # keys = np.random.choice(list(agents.keys()), n_kill, replace=False)
-    # Get keys of the slowest n_kill agents
+
+    # Kill the slowest agents
     keys = list(agents.keys())
     speeds = np.asarray([board.agent_speeds[k] for k in keys])
     ix = np.argsort(speeds)
-    # ix = np.where(speeds < 0.95)[0]
     keys = [keys[i] for i in ix[:n_kill]]
+
     for key in keys:
         id = agents[key].id
         loc = board.agent_locations[id]
