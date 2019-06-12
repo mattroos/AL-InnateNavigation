@@ -31,22 +31,45 @@ print('seed = %d' % seed)
 np.random.seed(seed)
 random.seed(seed)
 
+## TODO:
+#
+# - Why does performance drop during deterministic mode?
+# - Add hunger/satiety sensation
+# - Save agents after training and observe in board-only environment.
+# - Demo perspective of a single agent, with all sensations
+# - Consider having gender. Females give birth and are stationary. Males travel to get food.
+# - Males bring food to the mother and baby.
+#
 
-# Order directions possible in counter-clockwise manner
-directions_possible = np.asarray([[-1,0], [0,-1], [1,0], [0,1]])
+
+######################################
+## User specifications
 
 timeout_wall = 5
 timeout_mate = 0
 
 view_distance = 5
+# wall_gray = 85
+# food_gray = 170
+wall_gray = 128
+food_gray = 255
 
-n_agents = 40
+n_agents_start = 80
 b_render = True
 t_frame = 0.001
 n_steps = 100
 
 percent_population_max = 5  # maximum are of open board space that can be occupied by agents
+######################################
 
+
+
+# Order directions possible in counter-clockwise manner
+directions_possible = np.asarray([[-1,0], [0,-1], [1,0], [0,1]])
+
+wall_gray3 = np.full(3, wall_gray, dtype=np.uint8)
+food_gray3 = np.full(3, food_gray, dtype=np.uint8)
+n_agents = n_agents_start
 
 
 def softmax(x):
@@ -60,14 +83,13 @@ class Board():
         assert view_distance%2==1, 'Agent view distance must be odd-valued.'
         board = np.zeros(board_size, dtype=np.uint8)
         board_type = 'random'   # random, grouped
-        obstacle_gray = 128
     
         if board_type=='random':
             n = np.prod(board_size)
             p = np.random.permutation(n)
             p = p[:int(n*f_obstacles)]
             ix = np.unravel_index(p, board_size)
-            board[ix] = obstacle_gray
+            board[ix] = wall_gray
         
         elif board_type=='grouped':
             # Start with a few randomly located parts
@@ -75,7 +97,7 @@ class Board():
             p = np.random.permutation(n)
             p = p[:10]
             ix = np.unravel_index(p, board_size)
-            board[ix] = obstacle_gray
+            board[ix] = wall_gray
 
             # Then add points dependent on the location of the seed points and beyond
             n_obs = int(np.prod(board_size)*f_obstacles)    # number of obstacle pixels to add
@@ -96,24 +118,46 @@ class Board():
                     continue
                 if board[y,x] > 0:
                     continue
-                board[y,x] = obstacle_gray
+                board[y,x] = wall_gray
                 cnt += 1
 
         # Build border wall, with extra margin so agent view cannot extend
         # beyond edge of board...
         self.view_distance = view_distance
-        board[0:view_distance,:] = obstacle_gray # top wall
-        board[board_size[0]-view_distance-1:,:] = obstacle_gray # bottom wall
-        board[:,0:view_distance] = obstacle_gray # left wall
-        board[:,board_size[0]-view_distance-1:] = obstacle_gray # right wall
+        board[0:view_distance,:] = wall_gray # top wall
+        board[board_size[0]-view_distance-1:,:] = wall_gray # bottom wall
+        board[:,0:view_distance] = wall_gray # left wall
+        board[:,board_size[0]-view_distance-1:] = wall_gray # right wall
 
         self.board = np.repeat(np.expand_dims(board, axis=2), 3, axis=2)
         self.board_agents = np.zeros(board_size, dtype=np.uint32)
+        self.board_food = np.zeros(board_size, dtype=np.uint8)
         self.image = self.board     # for rendering
         self.unoccupied = np.sum(self.image, axis=2) == 0  # board plus agents
         self.agent_locations = {}
         self.agent_colors = {}
         self.agent_speeds = {}
+
+    def add_food(self, frac_pix=0.01, n_pix=None):
+        # Allowing food to be placed where it already exists. Just avoiding walls and agents.
+        available = self.board[:,:,0] + self.board_agents.astype(np.uint32) == 0  # board plus agents
+        ix_open = np.where(available)
+        n_open = len(ix_open[0])
+
+        if n_pix is None:
+            n_pix = int(frac_pix * n_open)
+        n_food_existing = int(np.sum(self.board_food))
+        n_pix = n_pix - n_food_existing
+
+        if n_open < n_pix:
+            print('\nEnding simulation: Not enough locations left for food growth.')
+            sys.exit()
+
+        ix = np.random.permutation(n_open)
+        self.board_food[ix_open[0][ix[0:n_pix]], ix_open[1][ix[0:n_pix]]] = 1
+        self.image[ix_open[0][ix[0:n_pix]], ix_open[1][ix[0:n_pix]], :] = food_gray
+        # self.image = self.image + np.repeat(np.expand_dims(self.board_food*food_gray, axis=2), 3, axis=2)
+        self.unoccupied = np.sum(self.image, axis=2) == 0  # board plus agents plus food
 
     def add_agent(self, agent, loc_target=None):
         if loc_target is None:
@@ -213,11 +257,19 @@ class Agent:
         self.lifetime_steps = 0
         self.lifetime_wall_bumps = 0
         self.lifetime_forwards = 0
+        self.steps_without_food = 100   # start off hungry
         if parents:
             self.parents = [parents[0].id, parents[1].id]
         else:
             self.parents = None
 
+        # vd = view_distance
+        # self.weights_in2hid = np.random.randn(3*vd, 3*vd**2 + 2)
+        # self.weights_hid2hid = np.random.randn(3*vd, 3*vd)
+        # self.bias_hid = np.random.randn(3*vd)
+        # self.act_hid = np.zeros(3*vd)
+        # self.weights_hid2out = np.random.randn(3, 3*vd)
+        # self.bias_out = np.random.randn(3)
         if not parents:
             vd = view_distance
             self.weights_in2hid = np.random.randn(3*vd, 3*vd**2 + 2)
@@ -225,6 +277,11 @@ class Agent:
             self.bias_hid = np.random.randn(3*vd)
             self.act_hid = np.zeros(3*vd)
             self.weights_hid2out = np.random.randn(3, 3*vd)
+            # self.weights_in2hid = np.random.randn(vd**2, 3*vd**2 + 2)
+            # self.weights_hid2hid = np.random.randn(vd**2, vd**2)
+            # self.bias_hid = np.random.randn(vd**2)
+            # self.act_hid = np.zeros(vd**2)
+            # self.weights_hid2out = np.random.randn(3, vd**2)
             self.bias_out = np.random.randn(3)
         else:
             sz_in2hid = parents[0].weights_in2hid.shape
@@ -269,7 +326,7 @@ class Agent:
             self.bias_out[ix] = np.random.randn(len(ix[0]))
 
 
-    def step(self):
+    def step(self, deterministic=False):
         turn = False
 
         # Assemble sensory input
@@ -287,8 +344,13 @@ class Agent:
         self.act_hid = np.clip(self.act_hid, 0, 1)
         # self.act_hid = softmax(self.act_hid)
         out = np.matmul(self.weights_hid2out, self.act_hid)
-        out = softmax(out)
-        action = np.random.choice(('forward', 'turn_left', 'turn_right'), 1, p=out)
+
+        if deterministic:
+            ix = np.argmax(out)
+            action = ['forward', 'turn_left', 'turn_right'][ix]
+        else:
+            out = softmax(out)
+            action = np.random.choice(('forward', 'turn_left', 'turn_right'), 1, p=out)
 
         # Set new direction if a turn was made
         if action=='turn_left':
@@ -328,7 +390,7 @@ for i in range(1, n_agents+1):
 
 board_size = [64,64]   # height, width
 # board_size = [128, 128]   # height, width
-board = Board(board_size=board_size, f_obstacles=0.1, view_distance=view_distance)
+board = Board(board_size=board_size, f_obstacles=0.0, view_distance=view_distance)
 for key, a in agents.items():
     board.add_agent(a)
 
@@ -341,26 +403,31 @@ i_step = 0
 t_start = time.time()
 cnt_mate_collisions = 0
 
-hist_step = np.zeros(0)
-hist_speed_med = np.zeros(0)
-hist_speed_mean = np.zeros(0)
-hist_speed_std = np.zeros(0)
-hist_speed_max = np.zeros(0)
-hist_bumprate_mean = np.zeros(0)
+hist_step = np.asarray([np.nan])
+hist_speed_mean = np.asarray([np.nan])
+hist_speed_std = np.asarray([np.nan])
+hist_speed_max = np.asarray([np.nan])
+hist_bumprate_mean = np.asarray([np.nan])
 
 # while i_step < n_steps:
 print('Step: {}, n_alive: {}, n_total: {}, Dur: {:.0f}, Steps per sec: {:.1f}'.format(i_step, n_agents, n_agents, 0, 0), end='\r')
 while True:
+    # board.add_food(frac_pix=0.0005)
+    board.add_food(n_pix=n_agents_start)
     dur = time.time() - t_start
     n_alive_agents = len(board.agent_locations)
-    print('Step: {}, n_alive: {}, n_total: {}, Dur: {:.0f}, Steps per sec: {:.1f}'.format(i_step, n_alive_agents, n_agents, dur, i_step/dur), end='\r')
+    print('Step: {}, speed: {:.2f}, n_alive: {}, n_total: {}, Dur: {:.0f}, Steps per sec: {:.1f}'.format(i_step, hist_speed_mean[-1], n_alive_agents, n_agents, dur, i_step/dur), end='\r')
     keys = list(agents.keys())
     agents_to_kill = np.empty(0, dtype=np.int)
     for key in keys:
         a = agents[key]
         a.lifetime_steps += 1
+        a.steps_without_food += 1
         bumped_object = 'none'
-        direction, turn, timeout = a.step()
+        if i_step < 2000:
+            direction, turn, timeout = a.step(deterministic=False)
+        else:
+            direction, turn, timeout = a.step(deterministic=True)
 
         speed_avg_factor = 0.95
 
@@ -373,9 +440,21 @@ while True:
                 mate_id = board.agent_at_location(loc_new)
 
                 if mate_id is None:
-                    # Bumped into wall
-                    bumped_object = 'wall'
-                    a.lifetime_wall_bumps += 1
+                    # Bumped into wall or food
+                    if np.array_equal(board.image[loc_new[0], loc_new[1], :], wall_gray3):
+                        bumped_object = 'wall'
+                        a.lifetime_wall_bumps += 1
+                    elif np.array_equal(board.image[loc_new[0], loc_new[1], :], food_gray3):
+                        bumped_object = 'none'  # bumped into food, but just eat it.
+                        a.steps_without_food = 0
+                        board.move_agent(a, loc_new)
+                        a.lifetime_forwards += 1
+                        board.agent_speeds[a.id] = speed_avg_factor*board.agent_speeds[a.id] + (1-speed_avg_factor)
+                        board.board_food[loc_new[0], loc_new[1]] = 0
+                    else:
+                        print('\nEnding simulation: Unknown object at new agent location.')
+                        sys.exit()
+
                 else:
                     # Bumped into other agent. Might be able to mate.
                     bumped_object = 'agent'
@@ -388,6 +467,9 @@ while True:
                         b_create_offspring = False
                     if agents[mate_id].parents is not None and a.id in agents[mate_id].parents:
                         b_create_offspring = False
+                    ## Don't have offspring if too hungry
+                    if a.steps_without_food > 100:
+                        b_create_offspring = False
 
                     ## Don't mate if this pair has mated before.
                     # This is to prevent agents from just idling in a local area and mating
@@ -397,6 +479,7 @@ while True:
 
                     if b_create_offspring:
                         # Create offspring
+                        a.steps_since_mating = 0
                         # n_offspring = random.choice([1, 2])
                         n_offspring = np.random.choice([1, 2], 1, p=[0.8, 0.2])[0]
                         id_offspring = np.arange(n_agents+1, n_agents+n_offspring+1)
@@ -445,62 +528,51 @@ while True:
 
     # Determine how many additional agents to kill based on overpopulation
     n_non_agent = np.sum(np.sum(board.board, axis=2)==0)
-    n_max = int(round(percent_population_max/100*n_non_agent))
+    # n_max = int(round(percent_population_max/100*n_non_agent))
+    n_max = n_agents_start
     n_alive_agents = len(board.agent_locations)
     n_kill = max(0, n_alive_agents-n_max)
 
     # # Randomly select agents to kill
     # keys = np.random.choice(list(agents.keys()), n_kill, replace=False)
 
-    # Kill the slowest agents
-    keys = list(agents.keys())
-    # speeds = np.asarray([board.agent_speeds[k] for k in keys])
-    lt_steps = np.asarray([agents[k].lifetime_steps for k in keys])
-    lt_forwards = np.asarray([agents[k].lifetime_forwards for k in keys])
-    speeds = lt_forwards / (lt_steps+0.001)
-    ix = np.argsort(speeds)
-    keys = [keys[i] for i in ix[:n_kill]]
+    # # Kill the slowest agents
+    # keys = list(agents.keys())
+    # # speeds = np.asarray([board.agent_speeds[k] for k in keys])
+    # lt_steps = np.asarray([agents[k].lifetime_steps for k in keys])
+    # lt_forwards = np.asarray([agents[k].lifetime_forwards for k in keys])
+    # speeds = lt_forwards / (lt_steps+0.001)
+    # ix = np.argsort(speeds)
+    # keys = [keys[i] for i in ix[:n_kill]]
 
-    # Kill the oldest agents
-    keys = list(agents.keys())
-    age = np.asarray([agents[k].lifetime_steps for k in keys])
-    ix = np.argsort(-age)
-    keys = [keys[i] for i in ix[:n_kill]]
+    # # Kill the oldest agents
+    # keys = list(agents.keys())
+    # age = np.asarray([agents[k].lifetime_steps for k in keys])
+    # ix = np.argsort(-age)
+    # keys = [keys[i] for i in ix[:n_kill]]
 
-    # loc_dead_agents = [[], []]
+    # Kill the hungriest agents
+    keys = list(agents.keys())
+    hunger = np.asarray([agents[k].steps_without_food for k in keys])
+    ix = np.argsort(-hunger)
+    keys = [keys[i] for i in ix[:n_kill]]
+    # ix = np.where(hunger > 100)[0]
+    # keys = [keys[i] for i in ix]
+
+    # # Kill the oldest, hungriest agents
+    # keys = list(agents.keys())
+    # hunger = np.asarray([agents[k].steps_without_food for k in keys])
+    # age = np.asarray([agents[k].lifetime_steps for k in keys])
+    # ix = np.argsort(-hunger*age)
+    # keys = [keys[i] for i in ix[:n_kill]]
+
     for key in keys:
         board.remove_agent(agents[key])
         del agents[key]
 
-        # id = agents[key].id
-        # loc = board.agent_locations[id]
-    
-        # # # Store location so we can briefly show dying agent as white pixel
-        # # loc_dead_agents[0].append(loc[0])
-        # # loc_dead_agents[1].append(loc[1])
 
-        # # Then remove dead agent
-        # board.image[loc[0],loc[1],:] = [0,0,0]
-        # board.board_agents[loc[0],loc[1]] = 0
-        # del board.agent_locations[id]
-        # del board.agent_colors[id]
-        # board.unoccupied = np.sum(board.image, axis=2) == 0  # board plus agents
-        # del agents[key]
-
-    # # Briefly show dying agent as white pixel
-    # if b_render and len(loc_dead_agents[0])>0:
-    #     board.image[loc_dead_agents[0],loc_dead_agents[1],:] = 255
-    #     plt.figure(1)
-    #     plt.clf()
-    #     plt.imshow(board.image)
-    #     n_alive_agents = len(board.agent_locations)
-    #     plt.title('n_agents = %d' % (n_alive_agents))
-    #     plt.pause(t_frame)
-
-    # Remove dead agent pixels from board
-    # board.image[loc_dead_agents[0],loc_dead_agents[1],:] = 0
-
-    if b_render and i_step%50==0:
+    if b_render and i_step%100==0:
+    # if b_render and i_step>4000:
         plt.figure(1)
         plt.clf()
         plt.imshow(board.image)
@@ -520,25 +592,28 @@ while True:
         lt_forwards = np.asarray([agents[k].lifetime_forwards for k in keys])
         bump_rate = lt_bumps / (lt_steps+1)
         speeds = lt_forwards / (lt_steps+0.001)
+        hunger = np.asarray([agents[k].steps_without_food for k in keys])
 
-        speed_med = np.median(speeds)
+        speed_mean = np.mean(speeds)
         hist_step = np.append(hist_step, i_step)
-        hist_speed_med = np.append(hist_speed_med, speed_med)
         hist_speed_mean = np.append(hist_speed_mean, np.mean(speeds))
         hist_speed_std = np.append(hist_speed_std, np.std(speeds))
         hist_speed_max = np.append(hist_speed_max, np.max(speeds))
         hist_bumprate_mean = np.append(hist_bumprate_mean, np.mean(bump_rate))
 
-        plt.hist(speeds, bins=np.arange(0,1,0.05))
-        plt.title('median speed = %f' % (speed_med))
+        # plt.hist(speeds, bins=np.arange(0,1,0.05))
+        plt.hist(lt_steps, bins='auto')
+        plt.title('mean speed = %f' % (speed_mean))
 
         plt.subplot(2,1,2)
         # plt.plot(hist_step, hist_bumprate_mean)
-        plt.plot(hist_step, hist_speed_med)
-        plt.plot(hist_step, hist_speed_max)
-        plt.errorbar(hist_step, hist_speed_mean, hist_speed_std)
+        plt.plot(hist_step, hist_speed_mean)
+        # plt.errorbar(hist_step, hist_speed_mean, hist_speed_std)
         plt.grid(True)
         plt.pause(t_frame)
+
+        # if i_step >= 2000:
+        #     pdb.set_trace()
 
     i_step += 1
 
