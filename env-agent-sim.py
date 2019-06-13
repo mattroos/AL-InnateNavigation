@@ -19,6 +19,7 @@ import time
 import sys
 import random
 from collections import OrderedDict 
+import pickle
 import pdb
 import matplotlib.pyplot as plt
 plt.ion()
@@ -77,6 +78,11 @@ def softmax(x):
     e_x = np.exp(x - np.max(x))
     return (e_x + 1e-10) / (e_x.sum() + 1e-10)
 
+def mutate(x, p=0.01):
+    ix = np.where(np.random.rand(*x.shape) < p)
+    # x[ix] = np.random.randn(len(ix[0]))
+    x[ix] = x[ix] + np.random.randn(len(ix[0]))/10
+    return x
 
 class Board():
     def __init__(self, board_size=[128,128], f_obstacles=0.05, view_distance=5):
@@ -258,6 +264,9 @@ class Agent:
         self.lifetime_wall_bumps = 0
         self.lifetime_forwards = 0
         self.steps_without_food = 100   # start off hungry
+        self.fertility_countdown = 0   # can create offspring if less than zero
+        self.lifetime_waits = 0        
+        self.lifetime_turns = 0
         if parents:
             self.parents = [parents[0].id, parents[1].id]
         else:
@@ -314,16 +323,21 @@ class Agent:
 
             # Perform mutation on weights and biases
             p = 0.01
-            ix = np.where(np.random.rand(*self.weights_in2hid.shape) < p)
-            self.weights_in2hid[ix] = np.random.randn(len(ix[0]))
-            ix = np.where(np.random.rand(*self.weights_hid2hid.shape) < p)
-            self.weights_hid2hid[ix] = np.random.randn(len(ix[0]))
-            ix = np.where(np.random.rand(*self.bias_hid.shape) < p)
-            self.bias_hid[ix] = np.random.randn(len(ix[0]))
-            ix = np.where(np.random.rand(*self.weights_hid2out.shape) < p)
-            self.weights_hid2out[ix] = np.random.randn(len(ix[0]))
-            ix = np.where(np.random.rand(*self.bias_out.shape) < p)
-            self.bias_out[ix] = np.random.randn(len(ix[0]))
+            # ix = np.where(np.random.rand(*self.weights_in2hid.shape) < p)
+            # self.weights_in2hid[ix] = np.random.randn(len(ix[0]))
+            # ix = np.where(np.random.rand(*self.weights_hid2hid.shape) < p)
+            # self.weights_hid2hid[ix] = np.random.randn(len(ix[0]))
+            # ix = np.where(np.random.rand(*self.bias_hid.shape) < p)
+            # self.bias_hid[ix] = np.random.randn(len(ix[0]))
+            # ix = np.where(np.random.rand(*self.weights_hid2out.shape) < p)
+            # self.weights_hid2out[ix] = np.random.randn(len(ix[0]))
+            # ix = np.where(np.random.rand(*self.bias_out.shape) < p)
+            # self.bias_out[ix] = np.random.randn(len(ix[0]))
+            self.weights_in2hid = mutate(self.weights_in2hid, p=p)
+            self.weights_hid2hid = mutate(self.weights_hid2hid, p=p)
+            self.bias_hid = mutate(self.bias_hid, p=p)
+            self.weights_hid2out = mutate(self.weights_hid2out, p=p)
+            self.bias_out = mutate(self.bias_out, p=p)
 
 
     def step(self, deterministic=False):
@@ -351,6 +365,10 @@ class Agent:
         else:
             out = softmax(out)
             action = np.random.choice(('forward', 'turn_left', 'turn_right'), 1, p=out)
+        # if self.bumped_object!='none':
+        #     action = np.random.choice(('turn_left', 'turn_right'), 1)
+        # else:
+        #     action = 'forward'
 
         # Set new direction if a turn was made
         if action=='turn_left':
@@ -383,14 +401,27 @@ class Agent:
         return directions_possible[n]
 
 
-
+# Create new agents or load from file
+load_agents = False
 agents = OrderedDict()
-for i in range(1, n_agents+1):
-    agents[i] = Agent(i, view_distance = view_distance)
+if load_agents:
+    with open('agents.pkl', 'rb') as input:
+        while True:
+            try:
+                a = pickle.load(input)
+                agents[a.id] = a
+                print('Restored agent %d' % (a.id))
+            except:
+                break
+else:
+    for i in range(1, n_agents+1):
+        agents[i] = Agent(i, view_distance = view_distance)
 
+
+# Create board and add agents in random locations
 board_size = [64,64]   # height, width
 # board_size = [128, 128]   # height, width
-board = Board(board_size=board_size, f_obstacles=0.0, view_distance=view_distance)
+board = Board(board_size=board_size, f_obstacles=0.05, view_distance=view_distance)
 for key, a in agents.items():
     board.add_agent(a)
 
@@ -408,12 +439,16 @@ hist_speed_mean = np.asarray([np.nan])
 hist_speed_std = np.asarray([np.nan])
 hist_speed_max = np.asarray([np.nan])
 hist_bumprate_mean = np.asarray([np.nan])
+hist_age_median = np.asarray([np.nan])
+hist_speed_quartile = np.full((3,1), np.nan)
+
+best_speed_mean = 0
 
 # while i_step < n_steps:
 print('Step: {}, n_alive: {}, n_total: {}, Dur: {:.0f}, Steps per sec: {:.1f}'.format(i_step, n_agents, n_agents, 0, 0), end='\r')
 while True:
     # board.add_food(frac_pix=0.0005)
-    board.add_food(n_pix=n_agents_start)
+    # board.add_food(n_pix=n_agents_start)
     dur = time.time() - t_start
     n_alive_agents = len(board.agent_locations)
     print('Step: {}, speed: {:.2f}, n_alive: {}, n_total: {}, Dur: {:.0f}, Steps per sec: {:.1f}'.format(i_step, hist_speed_mean[-1], n_alive_agents, n_agents, dur, i_step/dur), end='\r')
@@ -423,13 +458,21 @@ while True:
         a = agents[key]
         a.lifetime_steps += 1
         a.steps_without_food += 1
+        a.fertility_countdown -= 1
         bumped_object = 'none'
-        if i_step < 2000:
+        if i_step < np.inf:
             direction, turn, timeout = a.step(deterministic=False)
         else:
             direction, turn, timeout = a.step(deterministic=True)
 
+        if turn:
+            a.lifetime_turns += 1
+
+        if timeout > 0:
+            a.lifetime_waits += 1
+
         speed_avg_factor = 0.95
+
 
         if timeout <=0 and not turn and not np.any(key==agents_to_kill):
             loc_new = board.get_agent_location(a.id) + direction
@@ -467,9 +510,10 @@ while True:
                         b_create_offspring = False
                     if agents[mate_id].parents is not None and a.id in agents[mate_id].parents:
                         b_create_offspring = False
-                    ## Don't have offspring if too hungry
-                    if a.steps_without_food > 100:
-                        b_create_offspring = False
+
+                    # ## Don't have offspring if too hungry
+                    # if a.steps_without_food > 100:
+                    #     b_create_offspring = False
 
                     ## Don't mate if this pair has mated before.
                     # This is to prevent agents from just idling in a local area and mating
@@ -477,11 +521,18 @@ while True:
                     if mate_id in a.mates:
                         b_create_offspring = False
 
+                    ## Don't mate if either agent is infertile
+                    if a.fertility_countdown > 0 or agents[mate_id].fertility_countdown > 0:
+                        b_create_offspring = False
+
+                    # Create offspring, if all conditions satisfied
                     if b_create_offspring:
-                        # Create offspring
-                        a.steps_since_mating = 0
+                        a.fertility_countdown = 30
+                        agents[mate_id].fertility_countdown = 30
+
                         # n_offspring = random.choice([1, 2])
-                        n_offspring = np.random.choice([1, 2], 1, p=[0.8, 0.2])[0]
+                        # n_offspring = np.random.choice([1, 2], 1, p=[0.8, 0.2])[0]
+                        n_offspring = 1
                         id_offspring = np.arange(n_agents+1, n_agents+n_offspring+1)
                         for id_off in id_offspring:
                             n_agents += 1
@@ -502,11 +553,11 @@ while True:
                         a.timeout = timeout_mate
                         agents[mate_id].timeout = timeout_mate
 
-                        # Add submissive mate to list of agents to kill after this step
-                        agents_to_kill = np.append(agents_to_kill, mate_id)
+                        # # Add submissive mate to list of agents to kill after this step
+                        # agents_to_kill = np.append(agents_to_kill, mate_id)
 
-                        # Give agent credit for a forward move even though agent isn't actually moved
-                        # due to difficulty with current code configuration
+                        # Give agent credit for a forward move even though agent isn't actually
+                        # moved due to difficulty with current code configuration.
                         a.lifetime_forwards += 1
 
             else:
@@ -551,13 +602,13 @@ while True:
     # ix = np.argsort(-age)
     # keys = [keys[i] for i in ix[:n_kill]]
 
-    # Kill the hungriest agents
-    keys = list(agents.keys())
-    hunger = np.asarray([agents[k].steps_without_food for k in keys])
-    ix = np.argsort(-hunger)
-    keys = [keys[i] for i in ix[:n_kill]]
-    # ix = np.where(hunger > 100)[0]
-    # keys = [keys[i] for i in ix]
+    # # Kill the hungriest agents
+    # keys = list(agents.keys())
+    # hunger = np.asarray([agents[k].steps_without_food for k in keys])
+    # ix = np.argsort(-hunger)
+    # keys = [keys[i] for i in ix[:n_kill]]
+    # # ix = np.where(hunger > 100)[0]
+    # # keys = [keys[i] for i in ix]
 
     # # Kill the oldest, hungriest agents
     # keys = list(agents.keys())
@@ -566,6 +617,24 @@ while True:
     # ix = np.argsort(-hunger*age)
     # keys = [keys[i] for i in ix[:n_kill]]
 
+    # Kill agents, once every "generation"
+    n_alive_agents = len(board.agent_locations)
+    if n_alive_agents > 2*n_agents_start:
+        n_kill = n_alive_agents - n_agents_start
+
+        # Kill the slowest and agents
+        keys = list(agents.keys())
+        # speeds = np.asarray([board.agent_speeds[k] for k in keys])
+        lt_steps = np.asarray([agents[k].lifetime_steps for k in keys])
+        lt_forwards = np.asarray([agents[k].lifetime_forwards for k in keys])
+        speeds = lt_forwards / (lt_steps+0.001)
+        ix = np.argsort(speeds)
+        keys = [keys[i] for i in ix[:n_kill]]
+    else:
+        keys = []
+
+
+    # Do the actual killing
     for key in keys:
         board.remove_agent(agents[key])
         del agents[key]
@@ -581,15 +650,14 @@ while True:
         plt.pause(t_frame)
 
 
-        plt.figure(2)
-        plt.clf()
-        plt.subplot(2,1,1)
-
+        # Get more agent data for plotting
         keys = list(agents.keys())
         # speeds = np.asarray([board.agent_speeds[k] for k in keys])
         lt_steps = np.asarray([agents[k].lifetime_steps for k in keys])
         lt_bumps = np.asarray([agents[k].lifetime_wall_bumps for k in keys])
         lt_forwards = np.asarray([agents[k].lifetime_forwards for k in keys])
+        lt_turns = np.asarray([agents[k].lifetime_turns for k in keys])
+        lt_waits = np.asarray([agents[k].lifetime_waits for k in keys])
         bump_rate = lt_bumps / (lt_steps+1)
         speeds = lt_forwards / (lt_steps+0.001)
         hunger = np.asarray([agents[k].steps_without_food for k in keys])
@@ -597,18 +665,54 @@ while True:
         speed_mean = np.mean(speeds)
         hist_step = np.append(hist_step, i_step)
         hist_speed_mean = np.append(hist_speed_mean, np.mean(speeds))
+
+        # ix = np.where(lt_steps > 30)[0]
+        # if ix.size > 0:
+        #     hist_speed_quartile = np.concatenate((hist_speed_quartile, np.expand_dims(np.quantile(speeds[ix], [0.25, 0.5, 1.0]), axis=1)), axis=1)
+        # else:
+        #     hist_speed_quartile = np.concatenate((hist_speed_quartile, np.full((3,1), np.nan)), axis=1)
+
         hist_speed_std = np.append(hist_speed_std, np.std(speeds))
         hist_speed_max = np.append(hist_speed_max, np.max(speeds))
         hist_bumprate_mean = np.append(hist_bumprate_mean, np.mean(bump_rate))
+        hist_age_median = np.append(hist_age_median, np.median(lt_steps))
 
+
+        ## Save the agents if the population is better than all previous ones
+        if speed_mean > best_speed_mean:
+            best_speed_mean = speed_mean
+            with open('agents.pkl', 'wb') as output:
+                keys = list(agents.keys())
+                for key in keys:
+                    pickle.dump(agents[key], output, pickle.HIGHEST_PROTOCOL)
+
+
+        plt.figure(2)
+        plt.subplot(3,1,1)
+        plt.cla()
         # plt.hist(speeds, bins=np.arange(0,1,0.05))
+        # plt.title('mean speed = %f' % (speed_mean))
         plt.hist(lt_steps, bins='auto')
-        plt.title('mean speed = %f' % (speed_mean))
+        plt.title('age (lifetime_steps)')
 
-        plt.subplot(2,1,2)
+        plt.subplot(3,1,2)
+        plt.cla()
         # plt.plot(hist_step, hist_bumprate_mean)
         plt.plot(hist_step, hist_speed_mean)
         # plt.errorbar(hist_step, hist_speed_mean, hist_speed_std)
+        # plt.errorbar(hist_step, hist_speed_quartile[1,:], hist_speed_quartile[[0,2],:])
+        # plt.plot(np.full(speeds.shape, i_step), speeds, 'bo', mfc='none')
+        plt.title('Mean speed')
+        ax = plt.axis()
+        plt.axis(list(ax[0:2]) + [0,1])
+        plt.grid(True)
+
+        plt.subplot(3,1,3)
+        plt.cla()
+        # plt.plot(hist_step, hist_bumprate_mean)
+        plt.plot(hist_step, hist_age_median)
+        # plt.errorbar(hist_step, hist_speed_mean, hist_speed_std)
+        plt.title('Median age')
         plt.grid(True)
         plt.pause(t_frame)
 
