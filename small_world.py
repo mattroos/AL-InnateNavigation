@@ -50,9 +50,8 @@ plt.ion()
 if len(sys.argv) > 1:
     seed = int(sys.argv[1])
 else:
-    # seed = random.randint(0, 1e9)
-    # seed = 267939820
-    seed = 1
+    seed = random.randint(0, 1e9)
+    # seed = 1
 print('seed = %d' % seed)
 np.random.seed(seed)
 random.seed(seed)
@@ -70,9 +69,12 @@ timeout_wall = 5
 
 n_agents = 500
 n_parents = 20
-n_generations = 5000
+n_generations = 1000
+n_trials = 3
+n_trials_elite = 30
+sig_mutate = 0.1
 
-sig_mutate = 0.05
+eval_stochastic=False
 
 ######################################
 
@@ -83,11 +85,11 @@ def softmax(x):
     e_x = np.exp(x - np.max(x))
     return (e_x + 1e-10) / (e_x.sum() + 1e-10)
 
-def mutate(x, p=0.01):
-    ix = np.where(np.random.rand(*x.shape) < p)
-    # x[ix] = np.random.randn(len(ix[0]))
-    x[ix] = x[ix] + np.random.randn(len(ix[0]))/10
-    return x
+# def mutate(x, p=0.01):
+#     ix = np.where(np.random.rand(*x.shape) < p)
+#     # x[ix] = np.random.randn(len(ix[0]))
+#     x[ix] = x[ix] + np.random.randn(len(ix[0]))/10
+#     return x
 
 
 class Agent():
@@ -104,16 +106,12 @@ class Agent():
         if params:
             self.params = params
             self.n_layers = len(params)
-            # self.n_neurons = np.zeros(self.n_layers+1)
-            # for i in range(self.n_layers):
-            #     self.n_neurons[i] = params[i][0].shape[0]
-            # self.n_neurons[-1] = params[-1][0].shape[1]
         else:
             self.n_layers = len(model_size) - 1
             self.params = []
             for i in range(self.n_layers):
                 W = np.random.randn(model_size[i+1], model_size[i])
-                b = np.zeros((model_size[i+1]))
+                b = np.random.randn(model_size[i+1])
                 self.params.append([W, b])
 
     def action(self, image, stochastic=False):
@@ -145,24 +143,28 @@ class World():
         self.score = 0
         self.agent_steps_taken = 0
 
-        # Add barriers
-        board_type = 'random'
-
-        if board_type=='random':
-            n = np.prod(board_size)
-            p = np.random.permutation(n)
-            p = p[:int(n*f_obstacles)]
-            ix = np.unravel_index(p, board_size)
-            self.board_barriers[ix[0], ix[1], :] = color_wall
-
         # Add wall barriers
         self.board_barriers[:,0,:] = color_wall
         self.board_barriers[:,-1,:] = color_wall
         self.board_barriers[0,:,:] = color_wall
         self.board_barriers[-1,:,:] = color_wall
 
-        self.unoccupied = np.sum(self.board_barriers, axis=2) == 0
-        self.max_possible_steps = np.sum(self.unoccupied)
+        # Add additional barriers
+        board_type = 'random'
+
+        if board_type=='random':
+            n = (board_size[0]-2) * (board_size[1]-2)
+            n_fill = np.int0(n*f_obstacles)
+            mask = np.sum(self.board_barriers, axis=2)==0
+            ix = np.where(mask)
+            ix_shuf = np.random.permutation(len(ix[0]))
+            ix0 = ix[0][ix_shuf[:n_fill]]
+            ix1 = ix[1][ix_shuf[:n_fill]]
+            self.board_barriers[ix0, ix1,:] = color_wall
+
+        self.unoccupied = np.sum(self.board_barriers, axis=2)==0
+        self.max_possible_score = np.sum(self.unoccupied)
+        self.max_possible_steps = 2*np.sum(self.unoccupied)
 
         self.agent_start_loc = None
 
@@ -228,20 +230,39 @@ class World():
             self.board[new_loc[0], new_loc[1]] = color_agent
             self.agent_loc = new_loc
 
-        return action, self.agent_steps_taken
+        if self.agent_steps_taken >= self.max_possible_steps or \
+           self.get_score() >= self.max_possible_score:
+            b_done = True
+        else:
+            b_done = False
+
+        return action, self.agent_steps_taken, b_done
 
     def get_score(self):
         n_black = np.sum(np.sum(self.board, axis=2)==0)
-        score = self.max_possible_steps - n_black
+        score = self.max_possible_score - n_black
         return score
 
 
+def test_agents(agents, world, stochastic=False):
+    n_agents = len(agents)
+    scores = np.zeros(n_agents)
+    for i_agent in range(n_agents):
+        world.reset()
+        world.add_agent(agents[i_agent], random_loc=True)
+        b_done = False
+        while not b_done:
+            act, n_steps, b_done = world.step(stochastic=stochastic)
+        scores[i_agent] += world.get_score()
+    
+    return scores
+
 
 ######################
 ######################
 ######################
 
-board_size = 8  # num of pixels on one size of square board
+board_size = 6  # num of pixels on one size of square board
 # model_size = [3*board_size**2, board_size**2, 4] # number of neurons in densely connected layers. Last layer must be 4.
 # model_size = [3*board_size**2+1, board_size**2, 4] # number of neurons in densely connected layers. Last layer must be 4.
 model_size = [3*board_size**2+1, 2*board_size, board_size, 4] # number of neurons in densely connected layers. Last layer must be 4.
@@ -254,7 +275,6 @@ score_gen_median = np.full(n_generations, np.nan)
 score_gen_mean = np.full(n_generations, np.nan)
 score_gen_max = np.full(n_generations, np.nan)
 
-
 plt.figure(1)
 ax1 = plt.subplot(2,1,1)
 ax2 = plt.subplot(2,1,2)
@@ -262,33 +282,15 @@ ax2 = plt.subplot(2,1,2)
 t = time.time()
 for i_gen in range(n_generations):
 
-    world = World(board_size=[board_size, board_size])    # Build a new world with each generation
-    
+    # world = World(board_size=[board_size, board_size])    # Build a new world with each generation
+
+    # Evaluate all agents in the population
     scores = np.zeros(n_agents)
-
-    n_iter = 3
-    for i_iter in range(n_iter):
-        for i_agent in range(n_agents):
-            world.reset()
-            world.add_agent(agents[i_agent], random_loc=True)
-            
-            b_done = False
-            while not b_done:
-                act, n_steps = world.step(stochastic=False)
-                if n_steps >= world.max_possible_steps:
-                    b_done = True
-
-                # if i_gen > 9:
-                #     plt.clf()
-                #     plt.imshow(world.board)
-                #     score = world.get_score()
-                #     plt.title('action=%d, steps=%d, score=%d' % (act, n_steps, score))
-                #     plt.draw()
-                #     # plt.waitforbuttonpress(0.05)
-                #     pdb.set_trace()
-
-            scores[i_agent] += world.get_score()
-
+    for i_trial in range(n_trials):
+        # Build a new world for every trial
+        world = World(board_size=[board_size, board_size])    # Build a new world with each generation
+        scores += test_agents(agents, world, stochastic=eval_stochastic)
+    scores = scores / n_trials
 
     score_gen_median[i_gen] = np.median(scores)
     score_gen_mean[i_gen] = np.mean(scores)
@@ -296,25 +298,30 @@ for i_gen in range(n_generations):
 
     # Use the best agents as parents
     ix_sort = np.argsort(-scores)
-    ix_best = ix_sort[:n_parents]
-    parent_agents = agents[ix_best]
+    parent_agents = agents[ix_sort[:n_parents]]
+    scores = scores[ix_sort]
 
-    # Also keep some random agents ad parents, for diverity
-    i = np.random.permutation(n_agents-n_parents)
-    ix_diverse = ix_sort[i[:n_parents] + n_parents]
-    parent_agents = np.concatenate((parent_agents, agents[ix_diverse]))
+    # # Also keep some random agents ad parents, for diversity
+    # i = np.random.permutation(n_agents-n_parents)
+    # ix_diverse = ix_sort[i[:n_parents] + n_parents]
+    # parent_agents = np.concatenate((parent_agents, agents[ix_diverse]))
 
-    # agents = parent_agents[0:1]  # Keep the "elite" best agent for next generation
-    agents = Agent(params=parent_agents[0].params) # Keep clone of the "elite" best agent for next generation
+    # Keep the "elite" best agent for next generation
+    # First, further evaluate the top 10 parents for increased certainty of which is best.
+    scores2 = np.zeros(n_parents)
+    for i_trial in range(n_trials_elite):
+        # Build a new world for every trial
+        world = World(board_size=[board_size, board_size])    # Build a new world with each generation
+        scores2 += test_agents(parent_agents, world, stochastic=eval_stochastic)
+    scores2 = scores2 / n_trials_elite
+    ix_sort = np.argsort(-scores2)
+    agents = Agent(params=parent_agents[ix_sort[0]].params) # clone
 
     # Create mutated children for next generation
     # TODO: HAVE MORE CHILDREN IF HAVE HIGHER SCORE, PROBABILISTICALLY.
     for i_child in range(n_agents-1):
         i_parent = np.random.randint(0, high=len(parent_agents))
-        try:
-            child = parent_agents[i_parent].mutate()
-        except:
-            pdb.set_trace()
+        child = parent_agents[i_parent].mutate()
         agents = np.append(agents, child)
     del parent_agents
 
@@ -322,7 +329,7 @@ for i_gen in range(n_generations):
 
     plt.sca(ax1)
     plt.cla()
-    plt.plot(np.sort(scores/(n_iter*world.max_possible_steps)), '.')
+    plt.plot(np.sort(scores/(world.max_possible_score)), '.')
     ax = plt.axis()
     plt.axis([ax[0], ax[1], 0, 1])
     plt.grid(True)
@@ -330,41 +337,42 @@ for i_gen in range(n_generations):
         (i_gen, score_gen_max[i_gen], score_gen_mean[i_gen], score_gen_median[i_gen]))
     plt.draw()
     plt.pause(0.01)
-    # pdb.set_trace()
 
+    # Plot training curves, averaging across generations to
+    # get a fixed number of points in the curves.
     n_points_goal = 100
-    if i_gen%10==0:
+    if (i_gen+1)%10==0:
         plt.sca(ax2)
         plt.cla()
         gen = np.arange(n_generations)
 
-        n_points = min(n_points_goal, i_gen+1)
-        n_avg = int((i_gen+1) / n_points)
-        gen = gen[:n_avg*n_points]
-        binned = np.split(gen, n_points)
-        gen = np.asarray([np.max(b) for b in binned])
+        # n_points = min(n_points_goal, i_gen+1)
+        # n_avg = int((i_gen+1) / n_points)
+        # gen = gen[:n_avg*n_points]
+        # binned = np.split(gen, n_points)
+        # gen = np.asarray([np.max(b) for b in binned])
 
-        x = score_gen_mean[:n_avg*n_points]
-        binned = np.split(x, n_points)
-        x = np.asarray([np.median(b) for b in binned])
+        # x = score_gen_mean[:n_avg*n_points]
+        # binned = np.split(x, n_points)
+        # x = np.asarray([np.mean(b) for b in binned])
 
-        y = score_gen_median[:n_avg*n_points]
-        binned = np.split(y, n_points)
-        y = np.asarray([np.median(b) for b in binned])
+        # y = score_gen_median[:n_avg*n_points]
+        # binned = np.split(y, n_points)
+        # y = np.asarray([np.median(b) for b in binned])
 
-        z = score_gen_max[:n_avg*n_points]
-        binned = np.split(z, n_points)
-        z = np.asarray([np.median(b) for b in binned])
+        # z = score_gen_max[:n_avg*n_points]
+        # binned = np.split(z, n_points)
+        # z = np.asarray([np.max(b) for b in binned])
 
-        # plt.plot(gen, score_gen_mean, label='mean')
-        # plt.plot(gen, score_gen_median, label='median')
-        # plt.plot(gen, score_gen_max, label='max')
-        plt.plot(gen, x, label='mean')
-        plt.plot(gen, y, label='median')
-        plt.plot(gen, z, label='max')
+        plt.plot(gen, score_gen_mean, '.', label='mean')
+        plt.plot(gen, score_gen_median, '.', label='median')
+        plt.plot(gen, score_gen_max, '.', label='max')
+        # plt.plot(gen, x, '.', label='mean')
+        # plt.plot(gen, y, '.', label='median')
+        # plt.plot(gen, z, '.', label='max')
         
         ax = plt.axis()
-        plt.axis([ax[0], ax[1], 0, n_iter*world.max_possible_steps])
+        plt.axis([ax[0], ax[1], 0, world.max_possible_score])
         plt.grid(True)
         plt.legend()
         plt.xlabel('Generation')
@@ -381,16 +389,15 @@ while True:
     world.add_agent(agents[ix_best], random_loc=True)
     b_done = False
     while not b_done:
-        act, n_steps = world.step(stochastic=False)
-        if n_steps >= world.max_possible_steps:
-            b_done = True
+        act, n_steps, b_done = world.step(stochastic=False)
 
         plt.clf()
         plt.imshow(world.board)
         score = world.get_score()
         plt.title('action=%d, steps=%d, score=%d' % (act, n_steps, score))
         plt.draw()
-        plt.waitforbuttonpress()
+        # plt.waitforbuttonpress()
+        pdb.set_trace()
 
 
 '''
