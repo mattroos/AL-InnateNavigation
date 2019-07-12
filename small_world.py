@@ -79,6 +79,18 @@ eval_stochastic=False
 ######################################
 
 
+######################################
+# THINGS TO TRY...
+
+# Only mutate a subset of parameters when producing offspring.
+
+# Use a recurrent network, and allow for "do nothing" action which,
+# in effect, allows the network to "think" further before taking
+# an action.
+
+# Use multithreading module to accelerate. Or pytoch.
+######################################
+
 
 def softmax(x):
     """Compute softmax values for each sets of scores in x."""
