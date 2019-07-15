@@ -63,7 +63,7 @@ color_path = np.asarray([0, 0, 255]) / 255
 timeout_wall = 3
 
 n_cores = 4
-n_agents = n_cores * 250
+n_agents = 1000
 n_parents = 20
 n_generations = 1000
 n_trials = 4
@@ -145,11 +145,12 @@ class Agent():
         params = copy.deepcopy(self.params)
         # sig = np.random.uniform(0, high=sig_mutate_max)
         for i_layer in range(self.n_layers):
-            ix = np.where(np.random.uniform(0, 1, params[i_layer][0].shape) < p_mutate)
-            params[i_layer][0][ix] += np.random.randn(*params[i_layer][0].shape)[ix] * sig_mutate
-
-            ix = np.where(np.random.uniform(0, 1, params[i_layer][1].shape) < p_mutate)
-            params[i_layer][1][ix] += np.random.randn(*params[i_layer][1].shape)[ix] * sig_mutate
+            params[i_layer][0] += np.random.randn(*params[i_layer][0].shape) * sig_mutate
+            params[i_layer][1] += np.random.randn(*params[i_layer][1].shape) * sig_mutate
+            # ix = np.where(np.random.uniform(0, 1, params[i_layer][0].shape) < p_mutate)
+            # params[i_layer][0][ix] += np.random.randn(*params[i_layer][0].shape)[ix] * sig_mutate
+            # ix = np.where(np.random.uniform(0, 1, params[i_layer][1].shape) < p_mutate)
+            # params[i_layer][1][ix] += np.random.randn(*params[i_layer][1].shape)[ix] * sig_mutate
         agent = Agent(params=params)
         return agent
 
@@ -351,6 +352,8 @@ for i_gen in range(n_generations):
 
     ix_sort = np.argsort(-scores2)
     agents = Agent(params=parent_agents[ix_sort[0]].params) # clone
+
+    scores[:n_parents] = scores2    # update top scores with the more accurate estimates
 
     # Create mutated children for next generation
     # TODO: HAVE MORE CHILDREN IF HAVE HIGHER SCORE, PROBABILISTICALLY.
