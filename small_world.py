@@ -29,12 +29,6 @@
 #   Keep top agent, to get N agents for next generation.
 
 
-# TODO:
-# 1. Have children in relative proportion to score, probabilistically
-# 2. Make action decision stochastically.
-# 3. Add input that indicates a barrier was hit on previous step.
-
-
 import numpy as np
 import time
 import sys
@@ -42,6 +36,7 @@ import random
 from collections import OrderedDict 
 import pickle
 import copy
+import multiprocessing
 import pdb
 import matplotlib.pyplot as plt
 plt.ion()
@@ -65,14 +60,16 @@ color_wall = np.asarray([255, 0, 0]) / 255
 color_agent = np.asarray([0, 255, 0]) / 255
 color_path = np.asarray([0, 0, 255]) / 255
 
-timeout_wall = 5
+timeout_wall = 3
 
-n_agents = 500
+n_cores = 4
+n_agents = n_cores * 250
 n_parents = 20
 n_generations = 1000
-n_trials = 3
+n_trials = 4
 n_trials_elite = 30
 sig_mutate = 0.1
+p_mutate = 0.1
 
 eval_stochastic=False
 
@@ -80,7 +77,17 @@ eval_stochastic=False
 
 
 ######################################
-# THINGS TO TRY...
+# THINGS TO TRY/DO...
+
+# Fix code for starting/placing an agent at a deterministic location
+# (selected when the World is instantiated) or a random one.
+
+# Used the same initial agent location for all agents in a
+# given world evaluation trial.
+
+# Add a prediction component. Agent predicts the sensory
+# input due to its action. This could be a compressed
+# from, such the V world model of Ha and Schmidhuber, NIPS 2018.
 
 # Only mutate a subset of parameters when producing offspring.
 
@@ -88,7 +95,7 @@ eval_stochastic=False
 # in effect, allows the network to "think" further before taking
 # an action.
 
-# Use multithreading module to accelerate. Or pytoch.
+# Have children in relative proportion to score, probabilistically
 ######################################
 
 
@@ -97,18 +104,12 @@ def softmax(x):
     e_x = np.exp(x - np.max(x))
     return (e_x + 1e-10) / (e_x.sum() + 1e-10)
 
-# def mutate(x, p=0.01):
-#     ix = np.where(np.random.rand(*x.shape) < p)
-#     # x[ix] = np.random.randn(len(ix[0]))
-#     x[ix] = x[ix] + np.random.randn(len(ix[0]))/10
-#     return x
-
 
 class Agent():
     # A neural network.
     # Need to eventually make this recurrent, and with PyTorch.
 
-    # params are in format: [[W1,bi], [W2,b2], ...]
+    # Network parameters are in format: [[W1,bi], [W2,b2], ...]
 
     def __init__(self, model_size=None, params=None):
         # Either model_size of params must be defined, but not both.
@@ -142,9 +143,13 @@ class Agent():
 
     def mutate(self):
         params = copy.deepcopy(self.params)
+        # sig = np.random.uniform(0, high=sig_mutate_max)
         for i_layer in range(self.n_layers):
-            params[i_layer][0] += np.random.randn(*params[i_layer][0].shape) * sig_mutate
-            params[i_layer][1] += np.random.randn(*params[i_layer][1].shape) * sig_mutate
+            ix = np.where(np.random.uniform(0, 1, params[i_layer][0].shape) < p_mutate)
+            params[i_layer][0][ix] += np.random.randn(*params[i_layer][0].shape)[ix] * sig_mutate
+
+            ix = np.where(np.random.uniform(0, 1, params[i_layer][1].shape) < p_mutate)
+            params[i_layer][1][ix] += np.random.randn(*params[i_layer][1].shape)[ix] * sig_mutate
         agent = Agent(params=params)
         return agent
 
@@ -178,25 +183,18 @@ class World():
         self.max_possible_score = np.sum(self.unoccupied)
         self.max_possible_steps = 2*np.sum(self.unoccupied)
 
-        self.agent_start_loc = None
+        # Assign random agent starting location
+        ix = np.where(self.unoccupied)
+        if len(ix[0])==0:
+            print('\nEnding simulation: No free locations remain on board.')
+            sys.exit()
+        i = np.random.randint(len(ix[0]))
+        self.agent_start_loc = np.array([ix[0][i], ix[1][i]])
 
         self.reset()
 
     def add_agent(self, agent, random_loc=False):
         if random_loc:
-            self.agent_start_loc = None
-        self.agent = agent
-        self._place_agent()
-
-    def reset(self):
-        self.board = np.copy(self.board_barriers)
-        self.score = 0
-        self.agent_steps_taken = 0
-        self.agent = None
-        self.bumped = -1
-
-    def _place_agent(self):
-        if self.agent_start_loc is None:
             ix = np.where(self.unoccupied)
             if len(ix[0])==0:
                 print('\nEnding simulation: No free locations remain on board.')
@@ -205,8 +203,18 @@ class World():
             loc = np.array([ix[0][i], ix[1][i]])
         else:
             loc = self.agent_start_loc
+        self.agent = agent
+        self._place_agent(loc)
+
+    def reset(self):
+        self.board = np.copy(self.board_barriers)
+        self.score = 0
+        self.agent_steps_taken = 0
+        self.agent = None
+        self.bumped = -1
+
+    def _place_agent(self, loc):
         self.agent_loc = loc
-        self.agent_start_loc = loc
         self.board[loc[0], loc[1], :] = color_agent
 
     def _is_occupied(self, loc):
@@ -253,6 +261,7 @@ class World():
     def get_score(self):
         n_black = np.sum(np.sum(self.board, axis=2)==0)
         score = self.max_possible_score - n_black
+        scoer = score - self.agent_steps_taken
         return score
 
 
@@ -261,7 +270,7 @@ def test_agents(agents, world, stochastic=False):
     scores = np.zeros(n_agents)
     for i_agent in range(n_agents):
         world.reset()
-        world.add_agent(agents[i_agent], random_loc=True)
+        world.add_agent(agents[i_agent], random_loc=False)
         b_done = False
         while not b_done:
             act, n_steps, b_done = world.step(stochastic=stochastic)
@@ -278,10 +287,9 @@ board_size = 6  # num of pixels on one size of square board
 # model_size = [3*board_size**2, board_size**2, 4] # number of neurons in densely connected layers. Last layer must be 4.
 # model_size = [3*board_size**2+1, board_size**2, 4] # number of neurons in densely connected layers. Last layer must be 4.
 model_size = [3*board_size**2+1, 2*board_size, board_size, 4] # number of neurons in densely connected layers. Last layer must be 4.
+
 agents = [Agent(model_size=model_size) for i in range(n_agents)]
 agents = np.asarray(agents)
-
-world = World(board_size=[board_size, board_size])
 
 score_gen_median = np.full(n_generations, np.nan)
 score_gen_mean = np.full(n_generations, np.nan)
@@ -294,15 +302,21 @@ ax2 = plt.subplot(2,1,2)
 t = time.time()
 for i_gen in range(n_generations):
 
-    # world = World(board_size=[board_size, board_size])    # Build a new world with each generation
-
-    # Evaluate all agents in the population
-    scores = np.zeros(n_agents)
-    for i_trial in range(n_trials):
-        # Build a new world for every trial
-        world = World(board_size=[board_size, board_size])    # Build a new world with each generation
-        scores += test_agents(agents, world, stochastic=eval_stochastic)
-    scores = scores / n_trials
+    # # Evaluate all agents in the population
+    # scores = np.zeros(n_agents)
+    # for i_trial in range(n_trials):
+    #     # Build a new world for every trial
+    #     world = World(board_size=[board_size, board_size])    # Build a new world with each generation
+    #     scores += test_agents(agents, world, stochastic=eval_stochastic)
+    # scores = scores / n_trials
+    def eval(world):
+        scores = test_agents(agents, world, stochastic=eval_stochastic)
+        return scores
+    pool = multiprocessing.Pool(processes=n_cores)
+    worlds = [World(board_size=[board_size, board_size]) for i in range(n_trials)]
+    scores = np.asarray(pool.map(eval, worlds))
+    scores = np.mean(scores, axis=0)
+    pool.close()
 
     score_gen_median[i_gen] = np.median(scores)
     score_gen_mean[i_gen] = np.mean(scores)
@@ -318,14 +332,23 @@ for i_gen in range(n_generations):
     # ix_diverse = ix_sort[i[:n_parents] + n_parents]
     # parent_agents = np.concatenate((parent_agents, agents[ix_diverse]))
 
-    # Keep the "elite" best agent for next generation
-    # First, further evaluate the top 10 parents for increased certainty of which is best.
-    scores2 = np.zeros(n_parents)
-    for i_trial in range(n_trials_elite):
-        # Build a new world for every trial
-        world = World(board_size=[board_size, board_size])    # Build a new world with each generation
-        scores2 += test_agents(parent_agents, world, stochastic=eval_stochastic)
-    scores2 = scores2 / n_trials_elite
+    # # Keep the "elite" best agent for next generation
+    # # First, further evaluate the top 10 parents for increased certainty of which is best.
+    # scores2 = np.zeros(n_parents)
+    # for i_trial in range(n_trials_elite):
+    #     # Build a new world for every trial
+    #     world = World(board_size=[board_size, board_size])    # Build a new world with each generation
+    #     scores2 += test_agents(parent_agents, world, stochastic=eval_stochastic)
+    # scores2 = scores2 / n_trials_elite
+    def eval(world):
+        scores = test_agents(parent_agents, world, stochastic=eval_stochastic)
+        return scores
+    pool = multiprocessing.Pool(processes=n_cores)
+    worlds = [World(board_size=[board_size, board_size]) for i in range(n_trials_elite)]
+    scores2 = np.asarray(pool.map(eval, worlds))
+    scores2 = np.mean(scores2, axis=0)
+    pool.close()
+
     ix_sort = np.argsort(-scores2)
     agents = Agent(params=parent_agents[ix_sort[0]].params) # clone
 
@@ -341,6 +364,7 @@ for i_gen in range(n_generations):
 
     plt.sca(ax1)
     plt.cla()
+    world = World(board_size=[board_size, board_size]) # Just to get access to maximum possible score
     plt.plot(np.sort(scores/(world.max_possible_score)), '.')
     ax = plt.axis()
     plt.axis([ax[0], ax[1], 0, 1])
@@ -356,7 +380,7 @@ for i_gen in range(n_generations):
     if (i_gen+1)%10==0:
         plt.sca(ax2)
         plt.cla()
-        gen = np.arange(n_generations)
+        gen = np.arange(n_generations) + 1
 
         # n_points = min(n_points_goal, i_gen+1)
         # n_avg = int((i_gen+1) / n_points)
@@ -385,8 +409,9 @@ for i_gen in range(n_generations):
         
         ax = plt.axis()
         plt.axis([ax[0], ax[1], 0, world.max_possible_score])
+        # plt.axis([ax[0], ax[1], -world.max_possible_score, world.max_possible_score])
         plt.grid(True)
-        plt.legend()
+        plt.legend(loc='upper left')
         plt.xlabel('Generation')
         plt.ylabel('Scores')
         plt.draw()
@@ -395,7 +420,7 @@ for i_gen in range(n_generations):
 
 # Play best agent
 while True:
-    plt.figure(3)
+    plt.figure(2)
     ix_best = np.argmax(scores)
     world.reset()
     world.add_agent(agents[ix_best], random_loc=True)
@@ -410,6 +435,8 @@ while True:
         plt.draw()
         # plt.waitforbuttonpress()
         pdb.set_trace()
+    
+    world = World(board_size=[board_size, board_size])
 
 
 '''
