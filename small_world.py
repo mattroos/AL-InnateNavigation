@@ -79,21 +79,15 @@ eval_stochastic=False
 ######################################
 # THINGS TO TRY/DO...
 
-# Fix code for starting/placing an agent at a deterministic location
-# (selected when the World is instantiated) or a random one.
-
-# Used the same initial agent location for all agents in a
-# given world evaluation trial.
+# Use a recurrent network, and allow for "do nothing" action which,
+# in effect, allows the network to "think" further before taking
+# an action.
 
 # Add a prediction component. Agent predicts the sensory
 # input due to its action. This could be a compressed
 # from, such the V world model of Ha and Schmidhuber, NIPS 2018.
 
 # Only mutate a subset of parameters when producing offspring.
-
-# Use a recurrent network, and allow for "do nothing" action which,
-# in effect, allows the network to "think" further before taking
-# an action.
 
 # Have children in relative proportion to score, probabilistically
 ######################################
